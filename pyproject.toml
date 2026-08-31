@@ -1,0 +1,39 @@
+[project]
+name = "maya-csm"
+version = "0.1.0"
+description = "SillyTavern-compatible TTS server for the Maya voice (CSM-1B + csm-maya-exp2 LoRA)"
+requires-python = ">=3.10"
+license = { text = "CC-BY-NC-SA-4.0" }
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "soundfile>=0.12",
+    "numpy>=1.26",
+    "pydantic>=2.6",
+]
+
+[project.optional-dependencies]
+model = [
+    "torch>=2.3",
+    "transformers>=4.52",
+    "peft>=0.10",
+    "accelerate>=0.30",
+]
+dev = [
+    "pytest>=8.0",
+    "httpx2",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/maya_csm"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "model: requires model weights, HF token, and heavy deps (deselect with '-m \"not model\"')",
+]
+addopts = "-m 'not model'"
