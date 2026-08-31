@@ -16,7 +16,12 @@ In SillyTavern: **Extensions (stacked-cubes icon) → TTS**.
 | Provider Endpoint | `https://<your-url>/v1/audio/speech` |
 | API Key | anything (e.g. `none`) — not checked |
 | Model | `maya-csm` |
-| Available Voices | `maya` |
+| Available voices (comma separated) | `maya` |
+| Default voice | `maya` |
+
+The server ignores the model field and always speaks as Maya, so only the two
+voice fields need to agree with each other (`maya`). These settings are
+confirmed working.
 
 Enable the extension, assign the `maya` voice to your character, and turn on
 **Narrate by paragraphs (when not streaming)** if you use streaming responses.
