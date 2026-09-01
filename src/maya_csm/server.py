@@ -29,11 +29,9 @@ class SpeechRequest(BaseModel):
 
 
 def _load_model(settings: Settings):
-    from .model import MayaModel  # deferred: torch/transformers are optional deps
+    from .model import build_engine  # deferred: torch/transformers are optional deps
 
-    model = MayaModel(settings)
-    model.load()
-    return model
+    return build_engine(settings)
 
 
 def create_app(settings: Settings | None = None, model=None) -> FastAPI:

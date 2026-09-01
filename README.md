@@ -83,6 +83,13 @@ file (same shape as `DEFAULT_TAG_MAP` in `src/maya_csm/tags.py`) and
 | `MAYA_SAMPLING` | `1` | `0` = greedy decoding (the fine-tune author's baseline) |
 | `MAYA_PRELOAD` | `0` | `1` = load model at startup instead of first request |
 | `MAYA_TAG_MAP` | — | JSON file overriding/extending the tag table |
+| `MAYA_DTYPE` | `float16` | Weight dtype on GPU (`float16` is right for T4; `bfloat16` if you hear fp16 artifacts) |
+| `MAYA_DEVICES` | auto | Comma-separated device list, e.g. `cuda:0,cuda:1`; empty = every visible CUDA device |
+| `MAYA_COMPILE` | `0` | `1` = `torch.compile` + static KV cache (fastest steady state, slow first request) |
+
+On a multi-GPU box (e.g. Kaggle **T4 x2**) the server loads one model replica per
+GPU and generates a message's chunks in parallel. See
+[docs/PERFORMANCE.md](docs/PERFORMANCE.md).
 
 ## Known limitations
 

@@ -30,6 +30,9 @@ class Settings:
     sampling: bool = True
     preload: bool = False
     hf_token: str | None = None
+    dtype: str = "float16"  # fp16 is the right 16-bit type on T4/Turing (no native bf16)
+    devices: tuple[str, ...] = ()  # explicit inference devices; empty = auto-detect all CUDA
+    compile: bool = False  # opt-in torch.compile + static KV cache (see MayaModel.load)
     tag_map: dict[str, TagSpec] = field(default_factory=lambda: dict(DEFAULT_TAG_MAP))
     reference_clips: list[RefClip] = field(default_factory=list)
 
@@ -38,6 +41,7 @@ class Settings:
         env = os.environ if env is None else env
         default_adapter = str(_VENDORED_ADAPTER) if _VENDORED_ADAPTER.is_dir() else "shb777/csm-maya-exp2"
         tag_map_path = env.get("MAYA_TAG_MAP")
+        devices = tuple(d.strip() for d in env.get("MAYA_DEVICES", "").split(",") if d.strip())
         return cls(
             base_model=env.get("MAYA_BASE_MODEL", "sesame/csm-1b"),
             adapter_path=env.get("MAYA_ADAPTER", default_adapter),
@@ -46,5 +50,8 @@ class Settings:
             sampling=env.get("MAYA_SAMPLING", "1") not in ("0", "false", "no"),
             preload=env.get("MAYA_PRELOAD", "0") in ("1", "true", "yes"),
             hf_token=env.get("HF_TOKEN"),
+            dtype=env.get("MAYA_DTYPE", "float16"),
+            devices=devices,
+            compile=env.get("MAYA_COMPILE", "0") in ("1", "true", "yes"),
             tag_map=load_tag_map(tag_map_path) if tag_map_path else dict(DEFAULT_TAG_MAP),
         )

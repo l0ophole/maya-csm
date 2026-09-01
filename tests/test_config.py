@@ -10,6 +10,9 @@ def test_defaults():
     assert s.sampling is True
     assert s.reference_clips == []
     assert "csm-maya-exp2" in s.adapter_path
+    assert s.dtype == "float16"
+    assert s.devices == ()
+    assert s.compile is False
 
 
 def test_env_overrides():
@@ -27,6 +30,28 @@ def test_env_overrides():
     assert s.gap_ms == 80
     assert s.sampling is False
     assert s.hf_token == "hf_xxx"
+
+
+def test_perf_env_overrides():
+    s = Settings.from_env(env={
+        "MAYA_DTYPE": "bfloat16",
+        "MAYA_DEVICES": "cuda:0,cuda:1",
+        "MAYA_COMPILE": "1",
+    })
+    assert s.dtype == "bfloat16"
+    assert s.devices == ("cuda:0", "cuda:1")
+    assert s.compile is True
+
+
+def test_devices_env_is_whitespace_tolerant_and_optional():
+    assert Settings.from_env(env={"MAYA_DEVICES": " cuda:0 , cuda:1 "}).devices == ("cuda:0", "cuda:1")
+    assert Settings.from_env(env={"MAYA_DEVICES": ""}).devices == ()
+    assert Settings.from_env(env={}).devices == ()
+
+
+def test_compile_env_is_falsey_by_default():
+    assert Settings.from_env(env={"MAYA_COMPILE": "0"}).compile is False
+    assert Settings.from_env(env={"MAYA_COMPILE": "no"}).compile is False
 
 
 def test_tag_map_env_points_to_json(tmp_path):
