@@ -1,6 +1,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
+from maya_csm import model as model_mod
 from maya_csm import server as server_mod
 from maya_csm.config import Settings
 
@@ -47,6 +48,16 @@ def test_health(client):
     body = resp.json()
     assert body["status"] == "ok"
     assert body["model_loaded"] is True
+
+
+def test_model_is_built_via_build_engine(monkeypatch):
+    calls = []
+    monkeypatch.setattr(model_mod, "build_engine", lambda settings: calls.append(settings) or object())
+    monkeypatch.setattr(server_mod, "synthesize", lambda text, settings, model: b"RIFFfake")
+    app = server_mod.create_app(Settings(preload=True))
+    client = TestClient(app)
+    assert client.get("/health").json()["model_loaded"] is True
+    assert len(calls) == 1
 
 
 def test_models_listing(client):
