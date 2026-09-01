@@ -10,8 +10,10 @@ resolved device and returns a `MayaModel` (one device) or a `ModelPool` (more).
 
 from __future__ import annotations
 
+import contextlib
 import math
 import queue
+import threading
 
 import numpy as np
 
@@ -67,6 +69,7 @@ class MayaModel:
         self.processor = None
         self.model = None
         self.device = None
+        self._gen_lock = threading.Lock()  # serializes generate() in compile mode
 
     def load(self) -> None:
         import torch
@@ -99,20 +102,17 @@ class MayaModel:
         self.model.eval()
         if s.compile:
             self._enable_compile()
-            self._warmup()
 
     def _enable_compile(self) -> None:
         # Per the transformers CSM docs ("Making The Model Go Brrr"), a static
-        # cache auto-enables torch.compile(fullgraph=True, mode="reduce-overhead").
+        # cache auto-enables torch.compile(fullgraph=True, mode="reduce-overhead")
+        # — CUDA graphs. That needs greedy decoding (no torch.multinomial in the
+        # graph; see generate_chunk) and a single thread/stream (see build_engine).
         m = self.model
         m.generation_config.max_length = _COMPILE_MAX_LENGTH
         m.generation_config.max_new_tokens = None
         m.generation_config.cache_implementation = "static"
         m.depth_decoder.generation_config.cache_implementation = "static"
-
-    def _warmup(self) -> None:
-        # Pay the compile cost now, at load, instead of on the first user request.
-        self.generate_chunk("Warming up the model.", {})
 
     def generate_chunk(
         self, text: str, gen_params: dict, context: tuple[RefClip, ...] = ()
@@ -128,14 +128,20 @@ class MayaModel:
         inputs = self.processor.apply_chat_template(
             conversation, tokenize=True, return_dict=True, return_tensors="pt"
         ).to(self.model.device)
-        params = {**_SAMPLING_DEFAULTS, **gen_params} if self.settings.sampling else dict(gen_params)
-        # When compiling, a fixed generation_config.max_length governs (a varying
-        # per-call cap would fight the static cache); otherwise scale to the text.
-        if not self.settings.compile:
+        if self.settings.compile:
+            # CUDA graphs can't sample (torch.multinomial advances the RNG offset
+            # outside the graph); greedy only. A fixed generation_config.max_length
+            # governs length so the static cache shape stays constant.
+            params = {"do_sample": False, "depth_decoder_do_sample": False}
+        else:
+            params = {**_SAMPLING_DEFAULTS, **gen_params} if self.settings.sampling else dict(gen_params)
             params["max_new_tokens"] = min(
                 _MAX_NEW_TOKENS, max(_MIN_NEW_TOKENS, math.ceil(len(text) * _TOKENS_PER_CHAR))
             )
-        with torch.no_grad():
+        # CUDA graphs are single-stream: serialize concurrent requests. The first
+        # call through here also triggers compilation (~1-3 min) while others wait.
+        serialize = self._gen_lock if self.settings.compile else contextlib.nullcontext()
+        with serialize, torch.no_grad():
             audio = self.model.generate(**inputs, output_audio=True, **params)
         return audio[0].to(torch.float32).cpu().numpy()
 
@@ -181,11 +187,15 @@ class ModelPool:
 def build_engine(settings: Settings):
     """Load one replica per resolved device; return a `MayaModel` or `ModelPool`.
 
-    Replicas load sequentially. With `compile=True` that means paying each
-    replica's compile cost back to back at startup — acceptable for two GPUs.
+    `compile=True` forces a single replica: its CUDA graphs can't be driven from
+    `ModelPool`'s worker threads. So `MAYA_COMPILE` and multi-GPU are a choice —
+    one fast stream on one GPU, or sampled generation spread across all of them.
     """
+    devices = resolve_devices(settings)
+    if settings.compile:
+        devices = devices[:1]
     replicas = []
-    for device in resolve_devices(settings):
+    for device in devices:
         replica = MayaModel(settings, device=device)
         replica.load()
         replicas.append(replica)

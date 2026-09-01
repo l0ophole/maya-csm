@@ -89,3 +89,12 @@ def test_build_engine_returns_pool_for_multiple_devices(monkeypatch):
     assert isinstance(engine, ModelPool)
     assert engine.num_replicas == 2
     assert loaded == ["cuda:0", "cuda:1"]
+
+
+def test_build_engine_forces_single_replica_when_compiling(monkeypatch):
+    # CUDA graphs can't be driven from ModelPool's threads: compile => one GPU.
+    loaded = []
+    monkeypatch.setattr(model_mod.MayaModel, "load", lambda self: loaded.append(self._device_override))
+    engine = build_engine(Settings(devices=("cuda:0", "cuda:1"), compile=True))
+    assert isinstance(engine, model_mod.MayaModel)
+    assert loaded == ["cuda:0"]

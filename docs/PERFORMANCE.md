@@ -1,8 +1,15 @@
 # Performance & multi-GPU
 
 CSM generates audio one 80 ms frame at a time (a backbone step plus a 31-step
-depth-decoder loop), so a single request is latency-bound. The server speeds
-things up in two independent ways.
+depth-decoder loop), so a single request is latency-bound. There are two speedup
+strategies and they are **mutually exclusive** — pick one:
+
+- **Multi-GPU** (default): sampled generation, chunks spread across every GPU.
+- **`MAYA_COMPILE=1`**: one GPU, greedy decoding, CUDA graphs. Faster per stream,
+  but CUDA graphs can't be driven from the multi-GPU thread pool, so it runs on a
+  single GPU.
+
+fp16 and the LoRA merge apply to both.
 
 ## Multi-GPU (data parallelism)
 
@@ -23,13 +30,31 @@ replica per GPU** and generates the chunks concurrently — a 4-sentence reply o
 (no NVLink); splitting one `generate()` call across both cards pays more in
 cross-GPU traffic than it saves for a 1B model.
 
-## Single-GPU knobs (help every request)
+## Always on (help every request)
 
 | Knob | Effect |
 |---|---|
 | `float16` (default `MAYA_DTYPE`) | Turing/T4 has no native bf16; fp16 avoids the emulation path. Set `MAYA_DTYPE=bfloat16` only if fp16 produces audible artifacts. |
-| LoRA merge | The adapter is folded into the base weights at load (`merge_and_unload`) — identical output, no per-forward adapter cost. Always on. |
-| `MAYA_COMPILE=1` | `torch.compile` + static KV cache (per the transformers CSM docs). Removes per-kernel launch overhead, which dominates the 31-step depth-decoder loop — the largest single speedup. Costs 1–3 min of compilation at startup (done in a warmup call, not on the first user request) and recompiles each fresh Kaggle session. Pairs best with `MAYA_SAMPLING=0`. |
+| LoRA merge | The adapter is folded into the base weights at load (`merge_and_unload`) — identical output, no per-forward adapter cost. |
+
+## `MAYA_COMPILE=1` (opt-in, single GPU)
+
+`torch.compile` + static KV cache, following the transformers CSM "go brrr" recipe.
+Removes per-kernel launch overhead, which dominates the 31-step depth-decoder loop
+— the largest single speedup.
+
+Constraints, all enforced automatically when the flag is set:
+
+- **One GPU only.** The static cache makes transformers compile with CUDA graphs
+  (`mode="reduce-overhead"`); a captured graph can't be replayed from the
+  multi-GPU worker threads, so `build_engine` drops to a single replica.
+- **Greedy decoding.** `torch.multinomial` sampling advances the RNG offset
+  outside the graph (`RuntimeError: Offset increment outside graph capture`), so
+  `do_sample` is forced off — which matches the recipe and the fine-tune author's
+  baseline anyway. Per-tag `temperature` nudges are ignored in this mode.
+- **Compilation happens on the first request** (~1–3 min), not at load, so the
+  graph is captured on the thread that will replay it. Recompiles each fresh
+  Kaggle session.
 
 To check compilation is stable, run once with:
 
