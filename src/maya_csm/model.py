@@ -19,13 +19,24 @@ import numpy as np
 
 from .config import RefClip, Settings
 
-# 375 audio tokens covers roughly 200 chars of speech (author's demo settings).
-_TOKENS_PER_CHAR = 375 / 200
-_MIN_NEW_TOKENS = 125
+# Real speech is ~0.85 audio frames per character; 1.4 keeps generous headroom
+# without the old 375/200 ≈ 1.875 ceiling, which let a drifting chunk generate
+# ~22 s of audio before trim_trailing_noise cut it back. CSM stops early on its
+# own EOS (codebook_eos_token_id) — this is only the runaway guardrail.
+_TOKENS_PER_CHAR = 1.4
+_MIN_NEW_TOKENS = 80
 _MAX_NEW_TOKENS = 750
-# Static-cache length when compiling: prompt headroom + _MAX_NEW_TOKENS. A fixed
-# value keeps torch.compile from recompiling per input length.
-_COMPILE_MAX_LENGTH = 1024
+# Static-cache length when compiling: big enough for the longest realistic chunk
+# (MAYA_MAX_CHUNK_CHARS ≈ 150 → ~210 audio tokens) plus prompt/context headroom.
+# A fixed value keeps torch.compile from recompiling per input length — raise it
+# if you push MAYA_MAX_CHUNK_CHARS much past ~200.
+_COMPILE_MAX_LENGTH = 384
+
+
+def _estimate_max_new_tokens(text: str) -> int:
+    """Per-chunk audio-frame budget: ~one 80 ms frame per `_TOKENS_PER_CHAR`
+    chars, clamped to [`_MIN_NEW_TOKENS`, `_MAX_NEW_TOKENS`]."""
+    return min(_MAX_NEW_TOKENS, max(_MIN_NEW_TOKENS, math.ceil(len(text) * _TOKENS_PER_CHAR)))
 
 _SAMPLING_DEFAULTS = {
     "do_sample": True,
@@ -102,6 +113,27 @@ class MayaModel:
         self.model.eval()
         if s.compile:
             self._enable_compile()
+        self._warmup()
+
+    def _warmup(self) -> None:
+        """Run one throwaway generation at load so cuDNN autotuning and CUDA
+        allocator growth happen here — where MAYA_PRELOAD already makes you wait —
+        instead of stalling the first real request.
+
+        Skipped when compiling: `mode="reduce-overhead"` captures a CUDA graph on
+        the calling thread, and it must be captured on the uvicorn worker thread
+        that will replay it (see `_enable_compile` / docs/PERFORMANCE.md), not on
+        the loader thread. In compile mode the first request (or the notebook's
+        warm-up cell hitting the HTTP endpoint) does the capture. GPU only; a
+        warm-up failure must never block startup."""
+        if self.settings.compile:
+            return
+        if not (self.device and str(self.device).startswith("cuda")):
+            return
+        try:
+            self.generate_chunk("Warming up.", {})
+        except Exception as exc:  # startup must survive a bad warm-up
+            print(f"maya-csm: warm-up generation skipped ({exc})")
 
     def _enable_compile(self) -> None:
         # Per the transformers CSM docs ("Making The Model Go Brrr"), a static
@@ -135,9 +167,7 @@ class MayaModel:
             params = {"do_sample": False, "depth_decoder_do_sample": False}
         else:
             params = {**_SAMPLING_DEFAULTS, **gen_params} if self.settings.sampling else dict(gen_params)
-            params["max_new_tokens"] = min(
-                _MAX_NEW_TOKENS, max(_MIN_NEW_TOKENS, math.ceil(len(text) * _TOKENS_PER_CHAR))
-            )
+            params["max_new_tokens"] = _estimate_max_new_tokens(text)
         # CUDA graphs are single-stream: serialize concurrent requests. The first
         # call through here also triggers compilation (~1-3 min) while others wait.
         serialize = self._gen_lock if self.settings.compile else contextlib.nullcontext()
